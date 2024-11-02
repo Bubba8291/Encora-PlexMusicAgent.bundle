@@ -1,0 +1,32 @@
+[
+  {
+    "id": "encora_api_key",
+    "label": "Encora.it API Key (put your own key)",
+    "type": "text",
+    "default": ""
+  },
+  {
+    "id": "stagemedia_api_key",
+    "label": "StageMedia.me API Key (put your own key)",
+    "type": "text",
+    "default": ""
+  },
+  {
+    "id": "create_show_collections",
+    "label": "Create a 'Collection' for each Show e.g. Waitress",
+    "type": "bool",
+    "default": false
+  },
+  {
+    "id": "title_format",
+    "label": "Title format (Variables: {show}, {date}, {date_usa}, {date_iso}, {date_numeric}, {tour}, {master})",
+    "type": "text",
+    "default": "{show}"
+  },
+  {
+    "id": "date_replace_char",
+    "label": "For dates missing the day / month, which character should be used to replace (e.g. '2024-11-xx')",
+    "type": "text",
+    "default": "x"
+  }
+]
