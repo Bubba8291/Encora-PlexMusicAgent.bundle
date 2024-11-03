@@ -67,9 +67,9 @@ def format_date(data):
             usa_date = datetime.strptime(date_info.get('full_date'), "%Y-%m-%d").strftime("%m-%d-%Y")
             numeric_date = datetime.strptime(date_info.get('full_date'), "%Y-%m-%d").strftime("%d-%m-%Y")
         except ValueError as e:
-            Log(u'[Encora] Date format error: {}'.format(e))
+            log(u'Date format error: {}'.format(e))
         except Exception as e:
-            Log(u'[Encora] An unexpected error occurred: {}'.format(e))
+            log(u'An unexpected error occurred: {}'.format(e))
     
     date_variant = date_info.get('date_variant')
     variant = " ({})".format(date_variant) if date_variant else ""    
@@ -129,15 +129,15 @@ def GetLibraryRootPath(dir):
       path    = os.path.relpath(dir, root)
       break
   else:  #401 no right to list libraries (windows)
-    Log.Info(u'[Encora]  Library access denied')
+    log(u'Library access denied')
     filename = os.path.join(CachePath, '_Logs', '_root_.scanner.log')
     if os.path.isfile(filename):
-      Log.Info(u'[Encora]  ASS root scanner file present: "{}"'.format(filename))
+      log(u'ASS root scanner file present: "{}"'.format(filename))
       line = Core.storage.load(filename)  #with open(filename, 'rb') as file:  line=file.read()
       for root in [os.sep.join(dir.split(os.sep)[0:x+2]) for x in range(dir.count(os.sep)-1, -1, -1)]:
         if "root: '{}'".format(root) in line:  path = os.path.relpath(dir, root).rstrip('.');  break  #Log.Info(u'[!] root not found: "{}"'.format(root))
       else: path, root = '_unknown_folder', ''
-    else:  Log.Info(u'[Encora]  ASS root scanner file missing: "{}"'.format(filename))
+    else:  log(u'ASS root scanner file missing: "{}"'.format(filename))
   return library, root, path
 
 
@@ -149,7 +149,7 @@ def encora_api_key():
     if value:
       value = value.strip()
     if value:
-      Log.Debug(u"[Encora] Loaded token from encora-token.txt file")
+    #   Log.Debug(u"Loaded token from encora-token.txt file")
 
       return value
 
@@ -164,7 +164,7 @@ def stagemedia_api_key():
     if value:
       value = value.strip()
     if value:
-      Log.Debug(u"[Encora] Loaded token from stagemedia-token.txt file")
+    #   log(u"Loaded token from stagemedia-token.txt file")
 
       return value
 
@@ -179,12 +179,12 @@ def make_request(url, headers={}):
     sleep_time = 1
     num_retries = 4
     for x in range(0, num_retries):
-        Log('[Encora] Requesting: {}'.format(url))
+        log('Requesting: {}'.format(url))
         try:
             response = requests.get(url, headers=headers, timeout=90, verify=False)
         except Exception as str_error:
-            Log('[Encora] Failed HTTP request: {} | {}'.format(x, url))
-            Log('[Encora] {}'.format(str_error))
+            log('Failed HTTP request: {} | {}'.format(x, url))
+            log('{}'.format(str_error))
 
         if str_error:
             time.sleep(sleep_time)
@@ -202,25 +202,32 @@ def json_load(template, *args):
     json_page = {}
     json_data = {}
 
+
     # Bearer token
     headers = {
         'Authorization': 'Bearer {}'.format(encora_api_key())  # Use the bearer token
     }
 
-    while not json_data or Dict(json_page, 'nextPageToken') and Dict(json_page, 'pageInfo', 'resultsPerPage') != 1 and iteration < 50:
+    while not json_data or Dict(json_page, 'next_page_url') and Dict(json_page, 'per_page') != 1 and iteration < 50:
         try:
-            full_url = url + '&pageToken=' + Dict(json_page, 'nextPageToken') if Dict(json_page, 'nextPageToken') else url
+            full_url = Dict(json_page, 'next_page_url') if Dict(json_page, 'next_page_url') else url
             json_page = JSON.ObjectFromURL(full_url, headers=headers)  # Pass headers to the request
         except Exception as e:
             json_data = JSON.ObjectFromString(e.content)
             raise ValueError('code: {}, message: {}'.format(Dict(json_data, 'error', 'code'), Dict(json_data, 'error', 'message')))
-        
+
         if json_data:
-            json_data['items'].extend(json_page['items'])
+            json_data['data'].extend(json_page['data'])
         else:
             json_data = json_page
         
         iteration += 1
+
+    if Dict(json_data, 'data'):
+        fixed_json_data = []
+        for data in json_data['data']:
+            fixed_json_data.append(data['recording'])
+        json_data['data'] = fixed_json_data
 
     return json_data
 
@@ -244,180 +251,209 @@ def Start():
   #HTTP.CacheTime                  = CACHE_1DAY
   HTTP.Headers['User-Agent'     ] = 'PlexAgent/0.9'
   HTTP.Headers['Accept-Language'] = 'en-us'
+  if not os.path.isfile(COLLECTION_FILE):
+    updateCollectionData()
 
 def clean_path(path):
     try:
         path = sanitize_path(path)
     except Exception as e:
-        Log('[Encora] search() - Exception1: filename: "{}", e: "{}"'.format(path, e))
+        log('search() - Exception1: filename: "{}", e: "{}"'.format(path, e))
     try:
         path = os.path.basename(path)
     except Exception as e:
-        Log('[Encora] search() - Exception2: filename: "{}", e: "{}"'.format(path, e))
+        log('search() - Exception2: filename: "{}", e: "{}"'.format(path, e))
     try:
         path = urllib2.unquote(path)
     except Exception as e:
-        Log('[Encora] search() - Exception3: filename: "{}", e: "{}"'.format(path, e))
+        log('search() - Exception3: filename: "{}", e: "{}"'.format(path, e))
     return path
 
 ### Assign unique ID ###
-def Search(results, media, lang, manual, album):
+def Search(results, media, lang, manual):
     filename = clean_path(media.filename)
-    Log(u'[Encora] Search() - media.filename: {}'.format(media.filename))
+    album = media.name if media.name else media.album if media.album else None
 
-    dir = os.path.dirname(filename)
-    Log(u'[Encora] Search() - dir: {}'.format(dir))
+    collection = getCollectionData()
+    collection = [item for item in collection['data']]
 
-    # Extract recording ID from the folder name
-    folder_name = os.path.basename(dir)
-    # Try to find the recording ID from folder name
-    recording_id_match = re.search(r'e-(\d+)', dir)
-    if recording_id_match:
-        recording_id = recording_id_match.group(1)
-        Log(u'[Encora] search() - Found recording ID in folder name: {}'.format(recording_id))
-    else:
-        # Fallback to checking for .encora_{id} file inside the folder
+    if filename:
+        dir = os.path.dirname(filename)
+        log(u'Search() - dir: {}'.format(dir))
+        log(u'Search() - filename: {}'.format(filename))
 
-        recording_id = find_encora_id_file(dir)
-        if recording_id:
-            Log(u'[Encora] search() - Found recording ID in filename: {}'.format(recording_id))
+        # Extract recording ID from the folder name
+        folder_name = os.path.basename(dir)
+        # Try to find the recording ID from folder name
+        recording_id_match = re.search(r'e-(\d+)', dir)
+        if recording_id_match:
+            recording_id = recording_id_match.group(1)
+            log(u'search() - Found recording ID in folder name: {}'.format(recording_id))
         else:
-            Log(u'[Encora] search() - No recording ID found in filenames')
-    if recording_id:
-        try:
-            json_recording_details = json_load(ENCORA_API_RECORDING_INFO, recording_id)
-            if json_recording_details:
-                Log.Info(u'filename: "{}", title: "{}"'.format(filename, json_recording_details['show']))
-                if album:
+            # Fallback to checking for .encora_{id} file inside the folder
+
+            recording_id = find_encora_id_file(dir)
+            if recording_id:
+                log(u'search() - Found recording ID in filename: {}'.format(recording_id))
+            else:
+                log(u'search() - No recording ID found in filenames')
+        log(u'Found recording ID: {}'.format(recording_id))
+        if recording_id:
+            try:
+                json_recording_details = get_first([item for item in collection if str(item.get('id')) == recording_id])
+                if json_recording_details:
+                    log(u'filename: "{}", title: "{}"'.format(filename, json_recording_details['show']))
                     results.Append(MetadataSearchResult(
-                        id='encoramusic|{}|{}|{}'.format(recording_id, json_recording_details['master'], os.path.basename(dir)),
+                        id='encoramusic|{}|{}'.format(recording_id, os.path.basename(dir)),
                         name=json_recording_details['show'],
                         year=Datetime.ParseDate(json_recording_details['date']['full_date']).year,
                         score=100,
                         lang=lang
                     ))
-                else:
-                    results.Append(MetadataSearchResult(
-                        id='encoramusic-artist|{}'.format(json_recording_details['master']),
-                        name=json_recording_details['master'],
-                        score=100,
-                        lang=lang
-                    ))
-                Log(u''.ljust(157, '='))
-                return
-        except Exception as e:
-            Log(u'[Encora] search() - Could not retrieve data from Encora API for: "{}", Exception: "{}"'.format(recording_id, e))
+                    log(u''.ljust(157, '='))
+                    return
+            except Exception as e:
+                log(u'search() - Could not retrieve data from Encora API for: "{}", Exception: "{}"'.format(recording_id, e))
 
-    # If no recording ID is found, log and return a default result
-    Log(u'[Encora] search() - No recording ID found in folder name: "{}"'.format(folder_name))
-    library, root, path = GetLibraryRootPath(dir)
-    Log(u'[Encora] Putting folder name "{}" as guid since no assigned recording ID was found'.format(path.split(os.sep)[-1]))
-    if album:
-        results.Append(MetadataSearchResult(
-            id='encoramusic|{}|{}|{}'.format(path.split(os.sep)[-2] if os.sep in path else '', '', dir),
-            name=os.path.basename(dir),
-            year=None,
-            score=80,
-            lang=lang
-        ))
+        # If no recording ID is found, log and return a default result
+        # log(u'search() - No recording ID found in folder name: "{}"'.format(folder_name))
+        # library, root, path = GetLibraryRootPath(dir)
+        # log(u'Putting folder name "{}" as guid since no assigned recording ID was found'.format(path.split(os.sep)[-1]))
+        # results.Append(MetadataSearchResult(
+        #     id='encoramusic|{}|{}'.format(path.split(os.sep)[-2] if os.sep in path else '', dir),
+        #     name=os.path.basename(dir),
+        #     year=None,
+        #     score=80,
+        #     lang=lang
+        # ))
+        # log(''.ljust(157, '='))
     else:
-        results.Append(MetadataSearchResult(
-            id='encoramusic-artist|{}'.format(''),
-            name=os.path.basename(dir),
-            score=80,
-            lang=lang
-        ))
-    # Log(''.ljust(157, '='))
+        if album and album == '[Unknown Album]':
+            return
+        log(u'Search() - No filename found. Searching for album: {}'.format(album))
+        find_in_collection = [item for item in collection if item.get('show') in album or album in item.get('show') or item.get('date').get('full_date')[:4] in album]
+        # if year:
+            # find_in_collection = [item for item in find_in_collection if item.get('date').get('full_date')[:4] == year]
+        log(u'Found {} albums in collection'.format(len(find_in_collection)))
+        for item in find_in_collection:
+            log(u'Found album in collection: {}'.format(item.get('show')))
+            display_name = format_title(Prefs['title_format'], item)
+            results.Append(MetadataSearchResult(
+                id='encoramusic|{}|{}'.format(item.get('id'), ''),
+                name=display_name,
+                year=Datetime.ParseDate(item.get('date').get('full_date')).year,
+                score=100,
+                lang=lang
+            ))
+        return
 
 def SearchArtist(results, media, lang, manual):
-    if media.artist == '[Unknown Artist]':
-        return
-    # filename = clean_path(media.filename) if media.filename else media.artist
-    # Log(u'[Encora] SearchArtist() - filename: {}'.format(filename))
-    Log(u'[Encora] SearchArtist() - media.items: {}'.format(media.items))
-    master = manual.id.split('|')[1]
-    # dir = os.path.dirname(filename)
-    # Log(u'[Encora] SearchArtist() - dir: {}'.format(dir))
+    filename = clean_path(media.filename)
+    artist = media.artist if media.artist else None
 
-    # Extract recording ID from the folder name
-    # folder_name = os.path.basename(dir)
-    # Try to find the recording ID from folder name
-    # recording_id_match = re.search(r'ea-(\d+)', dir)
-    # if recording_id_match:
-        # recording_id = recording_id_match.group(1)
-        # Log(u'[Encora] search() - Found recording ID in folder name: {}'.format(recording_id))
-    # else:
-        # Fallback to checking for .encora_{id} file inside the folder
+    collection = getCollectionData()
+    collection = [item for item in collection['data']]
+
+    if filename:
+        dir = os.path.dirname(filename)
+        log(u'Search() - dir: {}'.format(dir))
+        log(u'Search() - filename: {}'.format(filename))
+
+        # Extract recording ID from the folder name
+        folder_name = os.path.basename(dir)
+        # Try to find the recording ID from folder name
+        recording_id_match = re.search(r'e-(\d+)', dir)
+        if recording_id_match:
+            recording_id = recording_id_match.group(1)
+            log(u'search() - Found recording ID in folder name: {}'.format(recording_id))
+        else:
+            # Fallback to checking for .encora_{id} file inside the folder
+
+            recording_id = find_encora_id_file(dir)
+            if recording_id:
+                log(u'search() - Found recording ID in filename: {}'.format(recording_id))
+            else:
+                log(u'search() - No recording ID found in filenames')
+    else:
+        if artist and artist == '[Unknown Artist]':
+            return
+        log(u'Search() - No filename found. Searching for artist: {}'.format(artist))
+        find_in_collection = [item['master'] for item in collection if item.get('master') in artist or artist in item.get('master')]
+        unique_albums = list(set(find_in_collection))
+        # if year:
+            # find_in_collection = [item for item in find_in_collection if item.get('date').get('full_date')[:4] == year]
+        log(u'Found {} albums in collection'.format(len(unique_albums)))
+        for master in unique_albums:
+            log(u'Found artist in collection: {}'.format(master))
+            results.Append(MetadataSearchResult(
+                id='encoramusic-artist|{}'.format(master),
+                name=master,
+                score=100,
+                lang=lang
+            ))
+        return
+    if recording_id:
+        try:
+            json_recording_details = get_first([item for item in collection if str(item.get('id')) == recording_id])
+            if json_recording_details:
+                master = json_recording_details['master']
+                log(u'filename: "{}", master: "{}"'.format(filename, master))
+                results.Append(MetadataSearchResult(
+                    id='encoramusic-artist|{}'.format(master),
+                    name=master,
+                    score=100,
+                    lang=lang
+                ))
+                log(u''.ljust(157, '='))
+                return
+        except Exception as e:
+            log(u'search() - Could not retrieve data from Encora API for: "{}", Exception: "{}"'.format(recording_id, e))
+
+    # If no recording ID is found, log and return a default result
+    log(u'search() - No recording ID found in folder name: "{}"'.format(folder_name))
+    library, root, path = GetLibraryRootPath(dir)
+    log(u'Putting folder name "{}" as guid since no assigned recording ID was found'.format(path.split(os.sep)[-1]))
     results.Append(MetadataSearchResult(
-        id='encoramusic-artist|{}'.format(master),
-        name=master,
-        score=100,
+        id='encoramusic-artist|{}'.format(path.split(os.sep)[-2] if os.sep in path else ''),
+        name=os.path.basename(dir),
+        score=80,
         lang=lang
     ))
-        # recording_id = find_encora_id_file(dir)
-        # if recording_id:
-        #     Log(u'[Encora] search() - Found recording ID in filename: {}'.format(recording_id))
-        # else:
-        #     Log(u'[Encora] search() - No recording ID found in filenames')
-    # if recording_id:
-    #     try:
-    #         json_recording_details = json_load(ENCORA_API_RECORDING_INFO, recording_id)
-    #         if json_recording_details:
-    #             Log.Info(u'filename: "{}", title: "{}"'.format(filename, json_recording_details['show']))
-    #             results.Append(MetadataSearchResult(
-    #                 id='encoramusic-artist|{}'.format(json_recording_details['master']),
-    #                 name=json_recording_details['master'],
-    #                 score=100,
-    #                 lang=lang
-    #             ))
-    #             Log(u''.ljust(157, '='))
-    #             return
-    #     except Exception as e:
-    #         Log(u'[Encora] search() - Could not retrieve data from Encora API for: "{}", Exception: "{}"'.format(recording_id, e))
-
-    # # If no recording ID is found, log and return a default result
-    # Log(u'[Encora] search() - No recording ID found in folder name: "{}"'.format(folder_name))
-    # library, root, path = GetLibraryRootPath(dir)
-    # Log(u'[Encora] Putting folder name "{}" as guid since no assigned recording ID was found'.format(path.split(os.sep)[-1]))
-    return
+    log(''.ljust(157, '='))
 
 ### Download metadata using encora ID ###
-def Update(metadata, media, lang, force, album):
-    Log(u'=== update(lang={}, force={}, album={}) ==='.format(lang, force, album))
-    temp1, recording_id, artist, folder = metadata.id.split("|")
+def Update(metadata, media, lang, force):
+    log(u'=== update(lang={}, force={}) ==='.format(lang, force))
+    temp1, recording_id, folder = metadata.id.split("|")
 
-    Log(u''.ljust(157, '='))
+    log(u''.ljust(157, '='))
+
+    collection = getCollectionData()
+    collection = [item for item in collection['data']]
 
     try:
-        json_recording_details = json_load(ENCORA_API_RECORDING_INFO, recording_id)
+        json_recording_details = get_first([item for item in collection if str(item.get('id')) == recording_id])
         if json_recording_details:
-            Log(u'[Encora] Setting metadata for recording ID: {}'.format(recording_id))
+            log(u'Setting metadata for recording ID: {}'.format(recording_id))
             # Update metadata fields based on the Encora API response
-            if album:
-                metadata.title = format_title(Prefs['title_format'], json_recording_details)
-                metadata.original_title = json_recording_details['show']
-                metadata.originally_available_at = (datetime.strptime(json_recording_details['date']['full_date'], "%Y-%m-%d") + timedelta(days=1)).date()
-                metadata.studio = json_recording_details['tour']
-                show_description_html = json_recording_details.get('metadata', {}).get('show_description', 'Not provided. Edit the show on Encora to populate this!')
-                show_description = clean_html_description(show_description_html)
-                metadata.summary = show_description
-                metadata.author = json_recording_details['master']
-                Log(u'[Encora] artist: {}'.format(metadata.artist))
-            else:
-                metadata.title = json_recording_details['master']
-                metadata.rating = '10'
-            # metadata.parentTitle = json_recording_details['master']
+            metadata.title = format_title(Prefs['title_format'], json_recording_details)
+            metadata.original_title = json_recording_details['show']
+            metadata.originally_available_at = (datetime.strptime(json_recording_details['date']['full_date'], "%Y-%m-%d") + timedelta(days=1)).date()
+            metadata.studio = json_recording_details['tour']
+            show_description_html = json_recording_details.get('metadata', {}).get('show_description', 'Not provided. Edit the show on Encora to populate this!')
+            show_description = clean_html_description(show_description_html)
+            metadata.summary = show_description
+            log(u'artist: {}'.format(metadata.artist))
             #log updated metadata
-            Log(u'[Encora] Updated metadata for recording ID: {}'.format(recording_id))
-            Log(u'[Encora] title: {}'.format(metadata.title))
-            if album:
-                Log(u'[Encora] original_title: {}'.format(metadata.original_title))
-                Log(u'[Encora] originally_available_at: {}'.format(metadata.originally_available_at))
-                Log(u'[Encora] studio: {}'.format(metadata.studio))
-                Log(u'[Encora] summary: {}'.format(metadata.summary))
+            log(u'Updated metadata for recording ID: {}'.format(recording_id))
+            log(u'title: {}'.format(metadata.title))
+            log(u'original_title: {}'.format(metadata.original_title))
+            log(u'originally_available_at: {}'.format(metadata.originally_available_at))
+            log(u'studio: {}'.format(metadata.studio))
+            log(u'summary: {}'.format(metadata.summary))
 
-            if album and Prefs['create_show_collections']: 
-                collection = metadata.collections.add(json_recording_details["show"])
+            if Prefs['create_show_collections']: 
+                metadata.collections.add(json_recording_details["show"])
 
             # Set content rating based on NFT status
             nft_date = json_recording_details['nft']['nft_date']
@@ -430,79 +466,110 @@ def Update(metadata, media, lang, force, album):
             current_time = datetime.utcnow()
 
             # Compare only when nft_date is present and properly parsed
-            if album and (nft_forever or (nft_date_parsed and nft_date_parsed > current_time)):
+            if (nft_forever or (nft_date_parsed and nft_date_parsed > current_time)):
                 labels = metadata.labels.new()
                 labels.name = 'NFT'
 
             # Create a cast array
-            if album:
-                cast_array = json_recording_details['cast']
-                show_id = json_recording_details['metadata']['show_id']
+            cast_array = json_recording_details['cast']
+            show_id = json_recording_details['metadata']['show_id']
 
-                ## Prepare media db api query 
-                ## TODO: Fix url once API is ready
-                media_db_api_url = "https://stagemedia.me/api/images?show_id={}&actor_ids={}".format(show_id, ','.join([str(x['performer']['id']) for x in cast_array]))
-                Log(u'[Encora] Media DB API URL: {}'.format(media_db_api_url))
-                ## make request to mediadb for poster / headshots
-                headers = {
-                    'Authorization': 'Bearer {}'.format(stagemedia_api_key()),
-                    'User-Agent': 'PlexAgent/0.9'
-                }
-                request = urllib2.Request(media_db_api_url, headers=headers)
-                response = urllib2.urlopen(request)
-                api_response = json.load(response)
-                Log('[Encora] Media DB API response: {}'.format(api_response))
+            ## Prepare media db api query 
+            ## TODO: Fix url once API is ready
+            media_db_api_url = "https://stagemedia.me/api/images?show_id={}&actor_ids={}".format(show_id, ','.join([str(x['performer']['id']) for x in cast_array]))
+            log(u'Media DB API URL: {}'.format(media_db_api_url))
+            ## make request to mediadb for poster / headshots
+            headers = {
+                'Authorization': 'Bearer {}'.format(stagemedia_api_key()),
+                'User-Agent': 'PlexAgent/0.9'
+            }
+            request = urllib2.Request(media_db_api_url, headers=headers)
+            response = urllib2.urlopen(request)
+            api_response = json.load(response)
+            log('Media DB API response: {}'.format(api_response))
 
-                # Update genres based on recording type
-                metadata.genres.clear()
-                recording_type = json_recording_details['metadata']['recording_type']
-                if recording_type:
-                    metadata.genres.add(recording_type)
-                if json_recording_details['metadata']['media_type']:
-                    metadata.genres.add(json_recording_details['metadata']['media_type'])
-                    Log(u'[Encora] added genre {}'.format(json_recording_details['metadata']['media_type']))
+            # Update genres based on recording type
+            metadata.genres.clear()
+            recording_type = json_recording_details['metadata']['recording_type']
+            if recording_type:
+                metadata.genres.add(recording_type)
+            if json_recording_details['metadata']['media_type']:
+                metadata.genres.add(json_recording_details['metadata']['media_type'])
+                log(u'added genre {}'.format(json_recording_details['metadata']['media_type']))
 
-                def get_order(cast_member):
-                    return cast_member['character'].get('order', 999) if cast_member['character'] else 999
+            def get_order(cast_member):
+                return cast_member['character'].get('order', 999) if cast_member['character'] else 999
 
-                performer_url_map = {performer['id']: performer['url'] for performer in api_response['performers']}
+            performer_url_map = {performer['id']: performer['url'] for performer in api_response['performers']}
 
-                for key in metadata.posters.keys():
-                    del metadata.posters[key]
+            for key in metadata.posters.keys():
+                del metadata.posters[key]
 
-                # set the posters from API
-                if 'posters' in api_response:
-                    for full_poster_url in api_response['posters']:
-                        # log each URL
-                        Log(u'[Encora] Full Poster URL: {}'.format(full_poster_url))
-                        metadata.posters[full_poster_url] = Proxy.Preview(HTTP.Request(full_poster_url).content)
+            # set the posters from API
+            if 'posters' in api_response:
+                for full_poster_url in api_response['posters']:
+                    # log each URL
+                    log(u'Full Poster URL: {}'.format(full_poster_url))
+                    metadata.posters[full_poster_url] = Proxy.Preview(HTTP.Request(full_poster_url).content)
 
-                sorted_cast = sorted(json_recording_details['cast'], key=get_order)
-                # cast_names = [x['performer']['name'] for x in sorted_cast]
+            sorted_cast = sorted(json_recording_details['cast'], key=get_order)
+            # cast_names = [x['performer']['name'] for x in sorted_cast]
 
             return
     except Exception as e:
-        Log(u'[Encora] update() - Could not retrieve data from Encora API for: "{}", Exception: "{}"'.format(recording_id, e))
+        log(u'update() - Could not retrieve data from Encora API for: "{}", Exception: "{}"'.format(recording_id, e))
 
-    Log('=== End Of Agent Call, errors after that are Plex related ==='.ljust(157, '='))
+    log('=== End Of Agent Call, errors after that are Plex related ==='.ljust(157, '='))
 
 def UpdateArtist(metadata, media, lang, force):
-    Log(u'=== update(lang={}, force={}) ==='.format(lang, force))
+    log(u'=== update(lang={}, force={}) ==='.format(lang, force))
     temp1, master = metadata.id.split("|")
 
     metadata.title = master
     metadata.rating = '10'
     return
 
+def log(message, debug=False):
+    if debug:
+        Log.Debug(u'{}'.format(message))
+    else:
+        Log(u'{}'.format(message))
+
+def get_first(iterable, default=None):
+    if iterable:
+        for item in iterable:
+            return item
+    return default
+
+def saveCollectionData(collection_data):
+    # Save the collection data
+    Data.SaveObject(COLLECTION_FILE, collection_data)
+
+def updateCollectionData():
+    # Get the collection data
+    collection_data = json_load(ENCORA_API_COLLECTION)
+    # Save the collection data
+    saveCollectionData(collection_data)
+    return collection_data
+
+def getCollectionData():
+    if os.path.isfile(COLLECTION_FILE):
+        # Load the collection data
+        collection_data = Data.LoadObject(COLLECTION_FILE)
+        return collection_data
+    # Update the collection data
+    collection_data = updateCollectionData()
+    return collection_data
+
 ### Agent declaration ##################################################################################################################################################
 class EncoraMusicAlbum(Agent.Album):
   name, primary_provider, fallback_agent, contributes_to, accepts_from, languages = 'EncoraMusic', True, ['com.plexapp.agents.xbmcnfo'], None, ['com.plexapp.agents.xbmcnfo'], [Locale.Language.NoLanguage]
-  def search (self, results,  media, lang, manual):  Search (results,  media, lang, manual, True)
-  def update (self, metadata, media, lang, force ):  Update (metadata, media, lang, force,  True)
+  def search (self, results, media, lang, manual):  Search (results,  media, lang, manual)
+  def update (self, metadata, media, lang, force ):  Update (metadata, media, lang, force)
 
 class EncoraMusicArtist(Agent.Artist):
   name, primary_provider, fallback_agent, contributes_to, accepts_from, languages = 'EncoraMusic', True, ['com.plexapp.agents.xbmcnfo'], None, ['com.plexapp.agents.xbmcnfo'], [Locale.Language.NoLanguage]
-  def search (self, results,  media, lang, manual):  SearchArtist (results,  media, lang, manual)
+  def search (self, results, media, lang, manual):  SearchArtist (results,  media, lang, manual)
 #   def update (self, metadata, media, lang, force ):  UpdateArtist (metadata, media, lang, force)
 
 
@@ -515,6 +582,7 @@ PLEX_LIBRARY_URL         = "http://127.0.0.1:32400/library/sections/"    # Allow
 ENCORA_API_BASE_URL      = "https://encora.it/api/"
 ENCORA_API_COLLECTION    = ENCORA_API_BASE_URL + "collection"  # fetch collection data
 ENCORA_API_RECORDING_INFO= ENCORA_API_BASE_URL + 'recording/{}' # fetch recording data
+COLLECTION_FILE = os.path.join(CachePath, 'collection.json')
 
 
 ### Plex Library XML ###
